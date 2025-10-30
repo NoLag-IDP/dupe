@@ -1,0 +1,296 @@
+--// 🟥 bl∞3m's Spawner GUI + ClonePlots Integration
+if game.CoreGui:FindFirstChild("DupeMainGUI") then
+	game.CoreGui.DupeMainGUI:Destroy()
+end
+
+local CoreGui = game:GetService("CoreGui")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
+--------------------------------------------------------
+-- CLONE MODULE (from ClonePlots_NoGUI.lua)
+--------------------------------------------------------
+local function getRelPath(ancestor, descendant)
+	local path = {}
+	local current = descendant
+	while current and current ~= ancestor do
+		table.insert(path, 1, current.Name)
+		current = current.Parent
+	end
+	if current ~= ancestor then return nil end
+	return path
+end
+
+local function findDescendantByRelPath(root, relPath)
+	local cur = root
+	for _, name in ipairs(relPath) do
+		if not cur then return nil end
+		cur = cur:FindFirstChild(name)
+	end
+	return cur
+end
+
+local function forceArchivable(root)
+	if not root then return end
+	pcall(function() root.Archivable = true end)
+	for _, v in ipairs(root:GetDescendants()) do
+		pcall(function() v.Archivable = true end)
+	end
+end
+
+local function copyAnimationInstances(realModel, fakeModel)
+	for _, anim in ipairs(realModel:GetDescendants()) do
+		if anim:IsA("Animation") then
+			local rel = getRelPath(realModel, anim.Parent)
+			if rel then
+				local targetParent = findDescendantByRelPath(fakeModel, rel)
+				if targetParent then
+					anim:Clone().Parent = targetParent
+				else
+					local fallback = fakeModel:FindFirstChild(anim.Parent.Name, true)
+					if fallback then
+						anim:Clone().Parent = fallback
+					else
+						anim:Clone().Parent = fakeModel
+					end
+				end
+			else
+				anim:Clone().Parent = fakeModel
+			end
+		end
+	end
+end
+
+local function findAnimators(model)
+	local animators = {}
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("Animator") then
+			table.insert(animators, d)
+		end
+	end
+	return animators
+end
+
+local function clonePlayingTracks(realModel, fakeModel)
+	local realAnimators = {}
+	for _, animator in ipairs(findAnimators(realModel)) do
+		local rel = getRelPath(realModel, animator.Parent)
+		if rel then
+			table.insert(realAnimators, {animator = animator, relParent = rel})
+		end
+	end
+
+	for _, entry in ipairs(realAnimators) do
+		local realAnimator = entry.animator
+		local relParent = entry.relParent
+		local fakeParent = findDescendantByRelPath(fakeModel, relParent)
+		if fakeParent then
+			local fakeAnimator = fakeParent:FindFirstChildOfClass("Animator")
+			if not fakeAnimator then
+				fakeAnimator = Instance.new("Animator")
+				fakeAnimator.Parent = fakeParent
+			end
+
+			for _, track in ipairs(realAnimator:GetPlayingAnimationTracks()) do
+				local animObj = track.Animation
+				if animObj and animObj:IsA("Animation") then
+					local newAnim = Instance.new("Animation")
+					newAnim.AnimationId = animObj.AnimationId
+					local ok, newTrack = pcall(function()
+						return fakeAnimator:LoadAnimation(newAnim)
+					end)
+					if ok and newTrack then
+						pcall(function() newTrack.Looped = track.Looped end)
+						pcall(function() newTrack:Play() end)
+						pcall(function() newTrack.TimePosition = track.TimePosition end)
+						pcall(function() newTrack:AdjustSpeed(track.PlaybackSpeed or track.Speed or 1) end)
+						newAnim.Parent = fakeAnimator.Parent
+					else
+						newAnim:Destroy()
+					end
+				end
+			end
+		end
+	end
+end
+
+local function cloneOnePlot(realPlot)
+	if not realPlot or not realPlot:IsA("Model") then return nil end
+	if tostring(realPlot.Name):sub(1,6) == "[FAKE]" then return nil end
+
+	forceArchivable(realPlot)
+	local ok, cloned = pcall(function() return realPlot:Clone() end)
+	if not ok or not cloned then return nil end
+
+	cloned.Name = "[FAKE]" .. realPlot.Name
+	cloned.Parent = realPlot.Parent
+
+	pcall(function() copyAnimationInstances(realPlot, cloned) end)
+	pcall(function() clonePlayingTracks(realPlot, cloned) end)
+
+	return cloned
+end
+
+local function cloneAllOnce()
+	local container = Workspace:FindFirstChild("Plots")
+	if not container then return end
+	for _, child in ipairs(container:GetChildren()) do
+		if child:IsA("Model") then
+			pcall(function() cloneOnePlot(child) end)
+		end
+	end
+end
+
+--------------------------------------------------------
+-- GUI SETUP
+--------------------------------------------------------
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "DupeMainGUI"
+ScreenGui.Parent = CoreGui
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+ScreenGui.ResetOnSpawn = false
+
+local outlineFrame = Instance.new("Frame")
+outlineFrame.Size = UDim2.new(0, 340, 0, 180)
+outlineFrame.Position = UDim2.new(0.5, -170, 0.5, -90)
+outlineFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+outlineFrame.BorderSizePixel = 0
+outlineFrame.Parent = ScreenGui
+Instance.new("UICorner", outlineFrame).CornerRadius = UDim.new(0, 10)
+
+local mainFrame = Instance.new("Frame")
+mainFrame.Size = UDim2.new(1, -6, 1, -6)
+mainFrame.Position = UDim2.new(0, 3, 0, 3)
+mainFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+mainFrame.BorderSizePixel = 0
+mainFrame.Parent = outlineFrame
+Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 10)
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -40, 0, 36)
+title.Position = UDim2.new(0, 10, 0, 8)
+title.BackgroundTransparency = 1
+title.Font = Enum.Font.GothamBold
+title.TextSize = 22
+title.TextColor3 = Color3.fromRGB(255, 255, 255)
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Text = "bl∞3m's Spawner"
+title.Parent = mainFrame
+
+local closeBtn = Instance.new("TextButton")
+closeBtn.Size = UDim2.new(0, 36, 0, 28)
+closeBtn.Position = UDim2.new(1, -44, 0, 8)
+closeBtn.BackgroundColor3 = Color3.fromRGB(180, 30, 30)
+closeBtn.Text = "X"
+closeBtn.Font = Enum.Font.GothamBold
+closeBtn.TextSize = 18
+closeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeBtn.BorderSizePixel = 0
+closeBtn.Parent = mainFrame
+Instance.new("UICorner", closeBtn).CornerRadius = UDim.new(0, 6)
+closeBtn.MouseButton1Click:Connect(function() ScreenGui:Destroy() end)
+
+local dupeBtn = Instance.new("TextButton")
+dupeBtn.Size = UDim2.new(0, 220, 0, 50)
+dupeBtn.Position = UDim2.new(0.5, -110, 0.5, -20)
+dupeBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+dupeBtn.Text = "DUPE"
+dupeBtn.Font = Enum.Font.GothamBold
+dupeBtn.TextSize = 20
+dupeBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+dupeBtn.BorderSizePixel = 0
+dupeBtn.Parent = mainFrame
+Instance.new("UICorner", dupeBtn).CornerRadius = UDim.new(0, 10)
+
+local infoLabel = Instance.new("TextLabel")
+infoLabel.Size = UDim2.new(1, 0, 0, 24)
+infoLabel.Position = UDim2.new(0, 0, 0.5, 40)
+infoLabel.BackgroundTransparency = 1
+infoLabel.Font = Enum.Font.Gotham
+infoLabel.TextSize = 16
+infoLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+infoLabel.Text = "Press to dupe your brainrots"
+infoLabel.Parent = mainFrame
+
+local loadingBarBG = Instance.new("Frame")
+loadingBarBG.Size = UDim2.new(1, -30, 0, 16)
+loadingBarBG.Position = UDim2.new(0, 15, 1, -28)
+loadingBarBG.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+loadingBarBG.Visible = false
+loadingBarBG.BorderSizePixel = 0
+loadingBarBG.Parent = mainFrame
+Instance.new("UICorner", loadingBarBG).CornerRadius = UDim.new(0, 8)
+
+local loadingBar = Instance.new("Frame")
+loadingBar.Size = UDim2.new(0, 0, 1, 0)
+loadingBar.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+loadingBar.BorderSizePixel = 0
+loadingBar.Parent = loadingBarBG
+Instance.new("UICorner", loadingBar).CornerRadius = UDim.new(0, 8)
+
+--------------------------------------------------------
+-- BUTTON + CLONE TRIGGER
+--------------------------------------------------------
+dupeBtn.MouseButton1Click:Connect(function()
+	if dupeBtn:GetAttribute("Running") then return end
+	dupeBtn:SetAttribute("Running", true)
+
+	dupeBtn.Text = "Duplicating..."
+	infoLabel.Text = "Wait for the loading bar to finish"
+	loadingBarBG.Visible = true
+
+	local tween = TweenService:Create(loadingBar, TweenInfo.new(30, Enum.EasingStyle.Linear), {Size = UDim2.new(1, 0, 1, 0)})
+	tween:Play()
+
+	task.delay(30, function()
+		infoLabel.Text = "Done!"
+		loadingBar.BackgroundColor3 = Color3.fromRGB(0, 180, 0)
+		
+		-- 🔁 Start clone process here
+		pcall(function() cloneAllOnce() end)
+
+		task.delay(5, function()
+			loadingBarBG.Visible = false
+			dupeBtn:SetAttribute("Running", false)
+			dupeBtn.Text = "DUPE"
+			dupeBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+			loadingBar.Size = UDim2.new(0, 0, 1, 0)
+			loadingBar.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+			infoLabel.Text = "Press to dupe your brainrots"
+		end)
+	end)
+end)
+
+--------------------------------------------------------
+-- DRAGGING
+--------------------------------------------------------
+local dragging, dragInput, startPos, startInputPos
+outlineFrame.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = true
+		startPos = outlineFrame.Position
+		startInputPos = input.Position
+		input.Changed:Connect(function()
+			if input.UserInputState == Enum.UserInputState.End then dragging = false end
+		end)
+	end
+end)
+
+outlineFrame.InputChanged:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+		dragInput = input
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if input == dragInput and dragging then
+		local delta = input.Position - startInputPos
+		outlineFrame.Position = UDim2.new(
+			startPos.X.Scale,
+			startPos.X.Offset + delta.X,
+			startPos.Y.Scale,
+			startPos.Y.Offset + delta.Y
+		)
+	end
+end)
